@@ -1,0 +1,5 @@
+{
+  "name": "FAAI",
+  "description": "Advanced AI consensus engine that compares, verifies, and scores responses from multiple AI models using cross-verification and logical analysis.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
