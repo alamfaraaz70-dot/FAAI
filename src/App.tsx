@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { 
   Brain, 
   Zap, 
@@ -72,25 +72,65 @@ const LANGUAGES: { name: Language; flag: string }[] = [
   { name: 'German', flag: '🇩🇪' },
 ];
 
-interface ModelResponse {
-  modelName: string;
-  content: string;
-  accuracyScore: number;
-  confidence: 'High' | 'Medium' | 'Low';
-  reasoning: string;
-  steps: { title: string; content: string; status: 'correct' | 'flawed' | 'neutral' }[];
+interface ModelScore {
+  accuracy: number;
+  logic: number;
+  completeness: number;
+  clarity: number;
+  creativity: number;
+  speed: number;
+  total: number;
 }
 
-interface ConsensusReport {
-  finalAnswer: string;
-  agreementScore: number; // 0-100
-  agreementCount: string; // e.g. "2/3"
-  judgeReasoning: string;
-  bestModel: string;
-  simplifiedExplanation: string;
-  detailedExplanation: string;
-  realLifeExample: string;
-  disagreementAnalysis: string;
+interface ModelDebate {
+  defense: string;
+  critique: string;
+}
+
+interface ConsensusResult {
+  query_analysis: {
+    type: string;
+    complexity: string;
+    intent: string;
+  };
+  debate: {
+    GPT: ModelDebate;
+    Gemini: ModelDebate;
+    Claude: ModelDebate;
+  };
+  scores: {
+    GPT: ModelScore;
+    Gemini: ModelScore;
+    Claude: ModelScore;
+  };
+  source_verification: {
+    GPT: string;
+    Gemini: string;
+    Claude: string;
+  };
+  truth_check: string;
+  hallucination_flags: string;
+  speed_winner: string;
+  best_model: string;
+  justification: string;
+  final_answer: string;
+  summary: {
+    short: string;
+    medium: string;
+    detailed: string;
+  };
+  learning_mode: {
+    beginner: string;
+    intermediate: string;
+    expert: string;
+  };
+  improvements: {
+    GPT: string;
+    Gemini: string;
+    Claude: string;
+  };
+  confidence_score: string;
+  read_aloud_script: string;
 }
 
 interface HistoryItem {
@@ -98,61 +138,71 @@ interface HistoryItem {
   timestamp: number;
   question: string;
   domain: Domain;
-  responses: ModelResponse[];
-  consensus: ConsensusReport;
+  data: ConsensusResult;
 }
 
 // --- Constants ---
 const MODELS = ['Gemini 3.1 Pro', 'GPT-4o (Simulated)', 'Claude 3.5 Sonnet (Simulated)'];
 
 const SYSTEM_PROMPT = (domain: Domain, mode: Mode, language: Language) => `
-You are the "FAAI Consensus Engine". Your goal is to provide a multi-perspective analysis of a user's query.
+You are an Advanced Multi-Agent AI System designed to evaluate, compare, and reason across multiple LLM outputs (GPT, Gemini, Claude, etc.).
+Your goal is to deliver the MOST accurate answer, explain WHY it is correct, and provide deep analytical insights using multiple intelligent modules.
 
 DOMAIN: ${domain}
 MODE: ${mode}
-LANGUAGE: ${language} (IMPORTANT: All responses and the consensus report MUST be in this language)
+LANGUAGE: ${language}
 
-TASK:
-1. Generate 3 distinct responses to the user's query as if they were from different top-tier AI models:
-   - "Gemini 3.1 Pro": Focus on multimodal reasoning and factual precision.
-   - "GPT-4o (Simulated)": Focus on conversational flow and broad knowledge.
-   - "Claude 3.5 Sonnet (Simulated)": Focus on safety, nuance, and code/theory depth.
+CRITICAL: You MUST respond in ${language}. All analysis, explanations, and the final answer must be in ${language}.
 
-2. Act as an "AI Judge" to evaluate these 3 responses:
-   - Assign an Accuracy Score (0-100) to each.
-   - Assign a Confidence Level (High/Medium/Low).
-   - Break each down into logical steps.
-   - Identify any logical flaws or errors.
+---
+🔍 INPUT:
+USER_QUERY: {The user's query}
+USER_PREFERENCE: { "priority": "${mode === 'Fast' ? 'speed' : 'accuracy'}" }
 
-3. Formulate a "Consensus Report":
-   - Provide the single most verified "Final Answer".
-   - Calculate an Agreement Score (how much do the models overlap?).
-   - Explain WHY they might disagree (assumptions, training data bias).
-   - Provide a simplified explanation, a detailed one, and a real-life example.
+---
+🧠 SYSTEM MODULES (EXECUTE IN ORDER):
 
-OUTPUT FORMAT (STRICT JSON):
+1️⃣ QUERY ANALYSIS: Identify type, complexity, and intent.
+2️⃣ MULTI-AGENT DEBATE MODE: Simulate GPT, Gemini, and Claude. For EACH: DEFENSE (why correct) and CRITIQUE (flaws in others).
+3️⃣ CRITERIA-WISE EVALUATION: Score 0-100 on Accuracy (40%), Logic (20%), Completeness (15%), Clarity (10%), Creativity (10%), Speed (5%).
+4️⃣ SOURCE VERIFICATION: Label "Verified", "Weak", or "None".
+5️⃣ TRUTH CHECKER AI: Independent fact-check. Output verification result and explanation.
+6️⃣ SPEED COMPARISON: Identify fastest model.
+7️⃣ HALLUCINATION DETECTOR: Flag fabricated facts or overconfidence.
+8️⃣ FINAL MODEL SELECTION: Choose BEST model and justify.
+9️⃣ FINAL ANSWER SYNTHESIS: Improve the best answer for accuracy, clarity, and completeness.
+🔟 SMART SUMMARY GENERATOR: Short (2 lines), Medium, and Detailed.
+1️⃣1️⃣ LEARNING MODE: Explain in Beginner, Intermediate, and Expert levels.
+1️⃣2️⃣ AI IMPROVEMENT SUGGESTIONS: How each model could improve.
+1️⃣3️⃣ CONFIDENCE METER: Overall score (0-100%).
+1️⃣4️⃣ READ ALOUD SCRIPT: Conversational and clear format.
+
+---
+📊 OUTPUT FORMAT (STRICT JSON):
 {
-  "responses": [
-    {
-      "modelName": "string",
-      "content": "string",
-      "accuracyScore": number,
-      "confidence": "High" | "Medium" | "Low",
-      "reasoning": "string",
-      "steps": [{ "title": "string", "content": "string", "status": "correct" | "flawed" | "neutral" }]
-    }
-  ],
-  "consensus": {
-    "finalAnswer": "string",
-    "agreementScore": number,
-    "agreementCount": "string",
-    "judgeReasoning": "string",
-    "bestModel": "string",
-    "simplifiedExplanation": "string",
-    "detailedExplanation": "string",
-    "realLifeExample": "string",
-    "disagreementAnalysis": "string"
-  }
+  "query_analysis": { "type": "...", "complexity": "...", "intent": "..." },
+  "debate": {
+    "GPT": { "defense": "...", "critique": "..." },
+    "Gemini": { "defense": "...", "critique": "..." },
+    "Claude": { "defense": "...", "critique": "..." }
+  },
+  "scores": {
+    "GPT": { "accuracy": 0, "logic": 0, "completeness": 0, "clarity": 0, "creativity": 0, "speed": 0, "total": 0 },
+    "Gemini": { "accuracy": 0, "logic": 0, "completeness": 0, "clarity": 0, "creativity": 0, "speed": 0, "total": 0 },
+    "Claude": { "accuracy": 0, "logic": 0, "completeness": 0, "clarity": 0, "creativity": 0, "speed": 0, "total": 0 }
+  },
+  "source_verification": { "GPT": "...", "Gemini": "...", "Claude": "..." },
+  "truth_check": "...",
+  "hallucination_flags": "...",
+  "speed_winner": "...",
+  "best_model": "...",
+  "justification": "...",
+  "final_answer": "...",
+  "summary": { "short": "...", "medium": "...", "detailed": "..." },
+  "learning_mode": { "beginner": "...", "intermediate": "...", "expert": "..." },
+  "improvements": { "GPT": "...", "Gemini": "...", "Claude": "..." },
+  "confidence_score": "...%",
+  "read_aloud_script": "..."
 }
 `;
 
@@ -166,6 +216,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>('Deep');
   const [language, setLanguage] = useState<Language>('English');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HistoryItem | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<'compare' | 'consensus' | 'history'>('compare');
@@ -199,17 +250,112 @@ export default function App() {
     }
   };
 
+  const [isReadingAloud, setIsReadingAloud] = useState(false);
+
+  const handleReadAloud = async () => {
+    console.log("Read Aloud triggered");
+    if (!result || isReadingAloud) {
+      console.log("Read Aloud skipped:", { hasResult: !!result, isReadingAloud });
+      return;
+    }
+
+    setIsReadingAloud(true);
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error('GEMINI_API_KEY is not defined');
+      }
+      console.log("Initializing Gemini TTS...");
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: result.data.read_aloud_script }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
+            },
+          },
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+        console.log("Audio data received, length:", base64Audio.length);
+        
+        // Convert base64 to ArrayBuffer
+        const binaryString = window.atob(base64Audio);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Gemini TTS returns 16-bit PCM, mono, 24kHz
+        const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+        const audioContext = new AudioContextClass();
+        const sampleRate = 24000;
+        const numChannels = 1;
+        
+        // Create Int16Array from the bytes
+        const int16Data = new Int16Array(bytes.buffer);
+        
+        // Create Float32Array for AudioBuffer
+        const float32Data = new Float32Array(int16Data.length);
+        for (let i = 0; i < int16Data.length; i++) {
+          // Convert 16-bit PCM to float [-1.0, 1.0]
+          float32Data[i] = int16Data[i] / 32768.0;
+        }
+        
+        const audioBuffer = audioContext.createBuffer(numChannels, float32Data.length, sampleRate);
+        audioBuffer.getChannelData(0).set(float32Data);
+        
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        
+        source.onended = () => {
+          console.log("Audio playback ended");
+          setIsReadingAloud(false);
+          audioContext.close();
+        };
+        
+        console.log("Starting audio playback...");
+        source.start(0);
+      } else {
+        throw new Error('No audio data received from model');
+      }
+    } catch (err) {
+      console.error('TTS Error:', err);
+      setError('Failed to read aloud. Please try again.');
+      setIsReadingAloud(false);
+    }
+  };
+
   const runConsensus = async () => {
     if (!query && !image) return;
 
     setLoading(true);
     setResult(null);
+    setError(null);
     setActiveTab('compare');
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("API Key is missing. Please check your environment variables.");
+      }
 
-      let contents: any[] = [{ text: query }];
+      const ai = new GoogleGenAI({ apiKey });
+
+      let contents: any[] = [];
+      if (query) {
+        contents.push({ text: query });
+      } else if (image) {
+        contents.push({ text: "Analyze this image and provide a consensus report." });
+      }
+
       if (image) {
         contents.push({
           inlineData: {
@@ -220,13 +366,156 @@ export default function App() {
       }
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         contents: { parts: contents },
         config: {
           systemInstruction: SYSTEM_PROMPT(domain, mode, language),
           responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              query_analysis: {
+                type: Type.OBJECT,
+                properties: {
+                  type: { type: Type.STRING },
+                  complexity: { type: Type.STRING },
+                  intent: { type: Type.STRING }
+                },
+                required: ["type", "complexity", "intent"]
+              },
+              debate: {
+                type: Type.OBJECT,
+                properties: {
+                  GPT: {
+                    type: Type.OBJECT,
+                    properties: {
+                      defense: { type: Type.STRING },
+                      critique: { type: Type.STRING }
+                    },
+                    required: ["defense", "critique"]
+                  },
+                  Gemini: {
+                    type: Type.OBJECT,
+                    properties: {
+                      defense: { type: Type.STRING },
+                      critique: { type: Type.STRING }
+                    },
+                    required: ["defense", "critique"]
+                  },
+                  Claude: {
+                    type: Type.OBJECT,
+                    properties: {
+                      defense: { type: Type.STRING },
+                      critique: { type: Type.STRING }
+                    },
+                    required: ["defense", "critique"]
+                  }
+                },
+                required: ["GPT", "Gemini", "Claude"]
+              },
+              scores: {
+                type: Type.OBJECT,
+                properties: {
+                  GPT: {
+                    type: Type.OBJECT,
+                    properties: {
+                      accuracy: { type: Type.NUMBER },
+                      logic: { type: Type.NUMBER },
+                      completeness: { type: Type.NUMBER },
+                      clarity: { type: Type.NUMBER },
+                      creativity: { type: Type.NUMBER },
+                      speed: { type: Type.NUMBER },
+                      total: { type: Type.NUMBER }
+                    },
+                    required: ["accuracy", "logic", "completeness", "clarity", "creativity", "speed", "total"]
+                  },
+                  Gemini: {
+                    type: Type.OBJECT,
+                    properties: {
+                      accuracy: { type: Type.NUMBER },
+                      logic: { type: Type.NUMBER },
+                      completeness: { type: Type.NUMBER },
+                      clarity: { type: Type.NUMBER },
+                      creativity: { type: Type.NUMBER },
+                      speed: { type: Type.NUMBER },
+                      total: { type: Type.NUMBER }
+                    },
+                    required: ["accuracy", "logic", "completeness", "clarity", "creativity", "speed", "total"]
+                  },
+                  Claude: {
+                    type: Type.OBJECT,
+                    properties: {
+                      accuracy: { type: Type.NUMBER },
+                      logic: { type: Type.NUMBER },
+                      completeness: { type: Type.NUMBER },
+                      clarity: { type: Type.NUMBER },
+                      creativity: { type: Type.NUMBER },
+                      speed: { type: Type.NUMBER },
+                      total: { type: Type.NUMBER }
+                    },
+                    required: ["accuracy", "logic", "completeness", "clarity", "creativity", "speed", "total"]
+                  }
+                },
+                required: ["GPT", "Gemini", "Claude"]
+              },
+              source_verification: {
+                type: Type.OBJECT,
+                properties: {
+                  GPT: { type: Type.STRING },
+                  Gemini: { type: Type.STRING },
+                  Claude: { type: Type.STRING }
+                },
+                required: ["GPT", "Gemini", "Claude"]
+              },
+              truth_check: { type: Type.STRING },
+              hallucination_flags: { type: Type.STRING },
+              speed_winner: { type: Type.STRING },
+              best_model: { type: Type.STRING },
+              justification: { type: Type.STRING },
+              final_answer: { type: Type.STRING },
+              summary: {
+                type: Type.OBJECT,
+                properties: {
+                  short: { type: Type.STRING },
+                  medium: { type: Type.STRING },
+                  detailed: { type: Type.STRING }
+                },
+                required: ["short", "medium", "detailed"]
+              },
+              learning_mode: {
+                type: Type.OBJECT,
+                properties: {
+                  beginner: { type: Type.STRING },
+                  intermediate: { type: Type.STRING },
+                  expert: { type: Type.STRING }
+                },
+                required: ["beginner", "intermediate", "expert"]
+              },
+              improvements: {
+                type: Type.OBJECT,
+                properties: {
+                  GPT: { type: Type.STRING },
+                  Gemini: { type: Type.STRING },
+                  Claude: { type: Type.STRING }
+                },
+                required: ["GPT", "Gemini", "Claude"]
+              },
+              confidence_score: { type: Type.STRING },
+              read_aloud_script: { type: Type.STRING }
+            },
+            required: [
+              "query_analysis", "debate", "scores", "source_verification", 
+              "truth_check", "hallucination_flags", "speed_winner", 
+              "best_model", "justification", "final_answer", "summary", 
+              "learning_mode", "improvements", "confidence_score", "read_aloud_script"
+            ]
+          }
         }
       });
+
+      if (!response.text) {
+        throw new Error("The model returned an empty response.");
+      }
 
       const data = JSON.parse(response.text);
       
@@ -235,14 +524,14 @@ export default function App() {
         timestamp: Date.now(),
         question: query || t.imageQuery,
         domain,
-        responses: data.responses,
-        consensus: data.consensus
+        data: data
       };
 
       setResult(newItem);
       setHistory(prev => [newItem, ...prev].slice(0, 20));
-    } catch (error) {
-      console.error("Consensus Error:", error);
+    } catch (err: any) {
+      console.error("Consensus Error:", err);
+      setError(err.message || "An unexpected error occurred while generating the solution.");
     } finally {
       setLoading(false);
     }
@@ -437,7 +726,10 @@ export default function App() {
               <div className="relative group">
                 <textarea
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => {
+                  setQuery(e.target.value);
+                  if (error) setError(null);
+                }}
                   placeholder={t.inputPlaceholder}
                   className="w-full bg-black/40 border border-white/10 rounded-2xl p-6 h-48 text-lg text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none"
                 />
@@ -512,99 +804,188 @@ export default function App() {
           </div>
 
           {/* Right Column: Results */}
-          {(result || loading) && (
+          {(result || loading || error) && (
             <div className="lg:col-span-8 space-y-8">
+              {error && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-6 bg-red-500/10 border border-red-500/20 rounded-3xl flex items-start gap-4 text-red-400"
+                >
+                  <div className="p-3 bg-red-500/20 rounded-2xl">
+                    <AlertTriangle className="w-6 h-6 shrink-0" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-black uppercase tracking-widest text-[10px] mb-1">System Error</p>
+                    <p className="text-sm font-medium leading-relaxed">{error}</p>
+                    <button 
+                      onClick={() => runConsensus()}
+                      className="mt-4 px-6 py-2 bg-red-500 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-red-600 transition-all hover:scale-105 active:scale-95"
+                    >
+                      Try Again
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+
               {/* Tabs */}
-              <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/10 w-fit">
-                <button
-                  onClick={() => setActiveTab('compare')}
-                  className={cn(
-                    "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
-                    activeTab === 'compare' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-slate-200"
-                  )}
-                >
-                  <Layers className="w-4 h-4" />
-                  {t.modelComparison}
-                </button>
-                <button
-                  onClick={() => setActiveTab('consensus')}
-                  className={cn(
-                    "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
-                    activeTab === 'consensus' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-slate-200"
-                  )}
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  {t.finalConsensus}
-                </button>
-              </div>
+              {(result || loading) && (
+                <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/10 w-fit">
+                  <button
+                    onClick={() => setActiveTab('compare')}
+                    className={cn(
+                      "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
+                      activeTab === 'compare' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    <Layers className="w-4 h-4" />
+                    {t.modelComparison}
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('consensus')}
+                    className={cn(
+                      "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
+                      activeTab === 'consensus' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    {t.finalConsensus}
+                  </button>
+                </div>
+              )}
 
               <AnimatePresence mode="wait">
-                {activeTab === 'compare' && result && (
+                {loading && (
+                  <motion.div 
+                    key="loading"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="space-y-8"
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {[1, 2, 3].map(i => (
+                        <div key={i} className="glass-card p-6 h-[400px] animate-pulse bg-white/5" />
+                      ))}
+                    </div>
+                    <div className="glass-card p-10 h-[300px] animate-pulse bg-white/5" />
+                  </motion.div>
+                )}
+
+                {activeTab === 'compare' && result && !loading && (
                   <motion.div 
                     key="compare"
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
-                    className="grid grid-cols-1 md:grid-cols-3 gap-6"
+                    className="space-y-8"
                   >
-                    {result.responses.map((resp, i) => (
-                      <div key={i} className="glass-card p-6 flex flex-col h-full relative overflow-hidden">
-                        {/* Accuracy Badge */}
-                        <div className="absolute top-0 right-0 p-4">
-                          <div className={cn(
-                            "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest",
-                            resp.accuracyScore > 85 ? "bg-emerald-500/20 text-emerald-400" : 
-                            resp.accuracyScore > 70 ? "bg-amber-500/20 text-amber-400" : 
-                            "bg-red-500/20 text-red-400"
-                          )}>
-                            {resp.accuracyScore}% {t.accuracy}
-                          </div>
+                    {/* Radar Chart for Scores */}
+                    <div className="glass-card p-8">
+                      <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-8 flex items-center gap-2">
+                        <BarChart3 className="w-4 h-4" />
+                        Performance Comparison
+                      </h3>
+                      <div className="h-[400px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <RadarChart cx="50%" cy="50%" outerRadius="80%" data={[
+                            { subject: 'Accuracy', GPT: result.data.scores.GPT.accuracy, Gemini: result.data.scores.Gemini.accuracy, Claude: result.data.scores.Claude.accuracy },
+                            { subject: 'Logic', GPT: result.data.scores.GPT.logic, Gemini: result.data.scores.Gemini.logic, Claude: result.data.scores.Claude.logic },
+                            { subject: 'Completeness', GPT: result.data.scores.GPT.completeness, Gemini: result.data.scores.Gemini.completeness, Claude: result.data.scores.Claude.completeness },
+                            { subject: 'Clarity', GPT: result.data.scores.GPT.clarity, Gemini: result.data.scores.Gemini.clarity, Claude: result.data.scores.Claude.clarity },
+                            { subject: 'Creativity', GPT: result.data.scores.GPT.creativity, Gemini: result.data.scores.Gemini.creativity, Claude: result.data.scores.Claude.creativity },
+                            { subject: 'Speed', GPT: result.data.scores.GPT.speed, Gemini: result.data.scores.Gemini.speed, Claude: result.data.scores.Claude.speed },
+                          ]}>
+                            <PolarGrid stroke="#ffffff10" />
+                            <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                            <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+                            <Radar name="GPT" dataKey="GPT" stroke="#6366f1" fill="#6366f1" fillOpacity={0.3} />
+                            <Radar name="Gemini" dataKey="Gemini" stroke="#10b981" fill="#10b981" fillOpacity={0.3} />
+                            <Radar name="Claude" dataKey="Claude" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.3} />
+                            <RechartsTooltip 
+                              contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #ffffff10', borderRadius: '12px' }}
+                              itemStyle={{ fontSize: '12px' }}
+                            />
+                          </RadarChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-6 mt-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full bg-indigo-500" />
+                          <span className="text-xs text-slate-400">GPT</span>
                         </div>
-
-                        <div className="flex items-center gap-3 mb-6">
-                          <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center">
-                            <Zap className="w-4 h-4 text-indigo-400" />
-                          </div>
-                          <h3 className="font-display font-bold text-white">{resp.modelName}</h3>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                          <span className="text-xs text-slate-400">Gemini</span>
                         </div>
-
-                        <div className="flex-grow overflow-y-auto max-h-[300px] scrollbar-hide mb-6">
-                          <div className="markdown-body text-sm">
-                            <Markdown>{resp.content}</Markdown>
-                          </div>
-                        </div>
-
-                        <div className="pt-6 border-t border-white/5 space-y-4">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-slate-500 font-medium">{t.confidence}</span>
-                            <span className={cn(
-                              "font-bold uppercase tracking-tighter",
-                              resp.confidence === 'High' ? "text-emerald-400" : 
-                              resp.confidence === 'Medium' ? "text-amber-400" : 
-                              "text-red-400"
-                            )}>
-                              {resp.confidence === 'High' ? t.confidenceHigh : resp.confidence === 'Medium' ? t.confidenceMedium : t.confidenceLow}
-                            </span>
-                          </div>
-                          
-                          {/* Mini Steps */}
-                          <div className="space-y-2">
-                            {resp.steps.slice(0, 3).map((step, si) => (
-                              <div key={si} className="flex items-center gap-2 text-[10px]">
-                                {step.status === 'correct' ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> :
-                                 step.status === 'flawed' ? <AlertTriangle className="w-3 h-3 text-red-500" /> :
-                                 <HelpCircle className="w-3 h-3 text-slate-500" />}
-                                <span className="text-slate-400 truncate">{step.title}</span>
-                              </div>
-                            ))}
-                          </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full bg-amber-500" />
+                          <span className="text-xs text-slate-400">Claude</span>
                         </div>
                       </div>
-                    ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {(['GPT', 'Gemini', 'Claude'] as const).map((model) => (
+                        <div key={model} className="glass-card p-6 flex flex-col h-full relative overflow-hidden">
+                          {/* Total Score Badge */}
+                          <div className="absolute top-0 right-0 p-4">
+                            <div className={cn(
+                              "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest",
+                              result.data.scores[model].total > 85 ? "bg-emerald-500/20 text-emerald-400" : 
+                              result.data.scores[model].total > 70 ? "bg-amber-500/20 text-amber-400" : 
+                              "bg-red-500/20 text-red-400"
+                            )}>
+                              {result.data.scores[model].total}% Overall
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 mb-6">
+                            <div className={cn(
+                              "w-8 h-8 rounded-lg flex items-center justify-center",
+                              model === 'GPT' ? "bg-indigo-500/20 text-indigo-400" :
+                              model === 'Gemini' ? "bg-emerald-500/20 text-emerald-400" :
+                              "bg-amber-500/20 text-amber-400"
+                            )}>
+                              <Zap className="w-4 h-4" />
+                            </div>
+                            <h3 className="font-display font-bold text-white">{model}</h3>
+                          </div>
+
+                          <div className="space-y-6 flex-grow">
+                            <div>
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Defense</h4>
+                              <p className="text-sm text-slate-300 leading-relaxed italic">"{result.data.debate[model].defense}"</p>
+                            </div>
+                            <div>
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Critique</h4>
+                              <p className="text-sm text-slate-400 leading-relaxed italic">"{result.data.debate[model].critique}"</p>
+                            </div>
+                            <div>
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Source Verification</h4>
+                              <div className={cn(
+                                "inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold",
+                                result.data.source_verification[model] === 'Verified' ? "bg-emerald-500/10 text-emerald-400" :
+                                result.data.source_verification[model] === 'Weak' ? "bg-amber-500/10 text-amber-400" :
+                                "bg-red-500/10 text-red-400"
+                              )}>
+                                {result.data.source_verification[model] === 'Verified' ? <CheckCircle2 className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                                {result.data.source_verification[model]}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="pt-6 border-t border-white/5 mt-6">
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Improvement Suggestion</h4>
+                            <p className="text-xs text-slate-500 leading-relaxed">{result.data.improvements[model]}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </motion.div>
                 )}
 
-                {activeTab === 'consensus' && result && (
+                {activeTab === 'consensus' && result && !loading && (
                   <motion.div 
                     key="consensus"
                     initial={{ opacity: 0, x: 20 }}
@@ -612,8 +993,31 @@ export default function App() {
                     exit={{ opacity: 0, x: -20 }}
                     className="space-y-8"
                   >
+                    {/* Query Analysis */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Type</h4>
+                        <p className="text-sm font-bold text-white">{result.data.query_analysis.type}</p>
+                      </div>
+                      <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Complexity</h4>
+                        <p className="text-sm font-bold text-white">{result.data.query_analysis.complexity}</p>
+                      </div>
+                      <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Intent</h4>
+                        <p className="text-sm font-bold text-white">{result.data.query_analysis.intent}</p>
+                      </div>
+                    </div>
+
                     {/* Final Answer Hero */}
-                    <div className="glass-card p-10 bg-gradient-to-br from-indigo-600/10 to-purple-600/10 border-indigo-500/20">
+                    <div className="glass-card p-10 bg-gradient-to-br from-indigo-600/10 to-purple-600/10 border-indigo-500/20 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-6">
+                        <div className="flex flex-col items-end">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Confidence</span>
+                          <span className="text-2xl font-black text-indigo-400">{result.data.confidence_score}</span>
+                        </div>
+                      </div>
+
                       <div className="flex items-center gap-3 mb-8">
                         <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-500/20">
                           <Trophy className="w-6 h-6 text-white" />
@@ -622,71 +1026,94 @@ export default function App() {
                           <h2 className="text-2xl font-display font-bold text-white">{t.verifiedConsensus}</h2>
                           <div className="flex items-center gap-2 text-indigo-400 text-sm font-medium">
                             <CheckCircle2 className="w-4 h-4" />
-                            {result.consensus.agreementCount} {t.modelsAgree}
+                            {result.data.best_model} selected as best
                           </div>
                         </div>
                       </div>
 
                       <div className="markdown-body text-lg text-white leading-relaxed mb-10">
-                        <Markdown>{result.consensus.finalAnswer}</Markdown>
+                        <Markdown>{result.data.final_answer}</Markdown>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="p-6 bg-white/5 rounded-2xl border border-white/5">
-                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">{t.agreementMeter}</h4>
-                          <div className="flex items-end gap-4">
-                            <div className="text-5xl font-black text-white">{result.consensus.agreementScore}%</div>
-                            <div className="flex-grow h-3 bg-white/5 rounded-full overflow-hidden mb-2">
-                              <motion.div 
-                                initial={{ width: 0 }}
-                                animate={{ width: `${result.consensus.agreementScore}%` }}
-                                transition={{ duration: 1.5, ease: "easeOut" }}
-                                className="h-full bg-gradient-to-r from-indigo-500 to-purple-500"
-                              />
-                            </div>
-                          </div>
+                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Truth Check</h4>
+                          <p className="text-sm text-slate-300 leading-relaxed">
+                            {result.data.truth_check}
+                          </p>
                         </div>
                         <div className="p-6 bg-white/5 rounded-2xl border border-white/5">
-                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">{t.judgeAnalysis}</h4>
+                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Selection Justification</h4>
                           <p className="text-sm text-slate-400 leading-relaxed italic">
-                            "{result.consensus.judgeReasoning}"
+                            "{result.data.justification}"
                           </p>
                         </div>
                       </div>
                     </div>
 
-                    {/* Enhanced Explanations */}
+                    {/* Summaries */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                       <div className="glass-card p-8">
                         <div className="flex items-center gap-2 mb-4 text-emerald-400">
                           <Zap className="w-4 h-4" />
-                          <h4 className="text-xs font-bold uppercase tracking-widest">{t.simplified}</h4>
+                          <h4 className="text-xs font-bold uppercase tracking-widest">Short Summary</h4>
                         </div>
-                        <p className="text-sm text-slate-400 leading-relaxed">{result.consensus.simplifiedExplanation}</p>
+                        <p className="text-sm text-slate-400 leading-relaxed">{result.data.summary.short}</p>
                       </div>
                       <div className="glass-card p-8">
                         <div className="flex items-center gap-2 mb-4 text-indigo-400">
                           <Layers className="w-4 h-4" />
-                          <h4 className="text-xs font-bold uppercase tracking-widest">{t.detailed}</h4>
+                          <h4 className="text-xs font-bold uppercase tracking-widest">Medium Explanation</h4>
                         </div>
-                        <p className="text-sm text-slate-400 leading-relaxed">{result.consensus.detailedExplanation}</p>
+                        <p className="text-sm text-slate-400 leading-relaxed">{result.data.summary.medium}</p>
                       </div>
                       <div className="glass-card p-8">
                         <div className="flex items-center gap-2 mb-4 text-purple-400">
                           <Sparkles className="w-4 h-4" />
-                          <h4 className="text-xs font-bold uppercase tracking-widest">{t.realLife}</h4>
+                          <h4 className="text-xs font-bold uppercase tracking-widest">Detailed Explanation</h4>
                         </div>
-                        <p className="text-sm text-slate-400 leading-relaxed">{result.consensus.realLifeExample}</p>
+                        <p className="text-sm text-slate-400 leading-relaxed">{result.data.summary.detailed}</p>
                       </div>
                     </div>
 
-                    {/* Disagreement Analysis */}
-                    <div className="glass-card p-8 border-red-500/10">
-                      <div className="flex items-center gap-3 mb-6">
-                        <AlertTriangle className="w-5 h-5 text-amber-500" />
-                        <h4 className="text-sm font-bold text-white uppercase tracking-widest">{t.whyModelsDisagree}</h4>
+                    {/* Learning Modes */}
+                    <div className="glass-card p-8">
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+                        <Brain className="w-4 h-4" />
+                        Learning Modes
+                      </h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2 block">Beginner</span>
+                          <p className="text-sm text-slate-400 leading-relaxed">{result.data.learning_mode.beginner}</p>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-purple-400 mb-2 block">Intermediate</span>
+                          <p className="text-sm text-slate-400 leading-relaxed">{result.data.learning_mode.intermediate}</p>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-pink-400 mb-2 block">Expert</span>
+                          <p className="text-sm text-slate-400 leading-relaxed">{result.data.learning_mode.expert}</p>
+                        </div>
                       </div>
-                      <p className="text-slate-400 leading-relaxed">{result.consensus.disagreementAnalysis}</p>
+                    </div>
+
+                    {/* Flags & Speed */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="glass-card p-8 border-red-500/10">
+                        <div className="flex items-center gap-3 mb-6">
+                          <AlertTriangle className="w-5 h-5 text-amber-500" />
+                          <h4 className="text-sm font-bold text-white uppercase tracking-widest">Hallucination Flags</h4>
+                        </div>
+                        <p className="text-slate-400 leading-relaxed">{result.data.hallucination_flags}</p>
+                      </div>
+                      <div className="glass-card p-8 border-emerald-500/10">
+                        <div className="flex items-center gap-3 mb-6">
+                          <Zap className="w-5 h-5 text-emerald-500" />
+                          <h4 className="text-sm font-bold text-white uppercase tracking-widest">Speed Winner</h4>
+                        </div>
+                        <p className="text-slate-400 leading-relaxed">{result.data.speed_winner}</p>
+                      </div>
                     </div>
 
                     {/* Actions */}
@@ -709,9 +1136,16 @@ export default function App() {
                           <Download className="w-4 h-4" />
                           {t.exportReport}
                         </button>
-                        <button className="flex items-center gap-2 px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-sm font-bold text-slate-300">
-                          <Volume2 className="w-4 h-4" />
-                          {t.readAloud}
+                        <button 
+                          onClick={handleReadAloud}
+                          disabled={isReadingAloud}
+                          className={cn(
+                            "flex items-center gap-2 px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-sm font-bold text-slate-300 disabled:opacity-50",
+                            isReadingAloud && "animate-pulse"
+                          )}
+                        >
+                          {isReadingAloud ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
+                          {isReadingAloud ? t.reading : t.readAloud}
                         </button>
                       </div>
                     </div>
@@ -782,7 +1216,7 @@ export default function App() {
                           ))}
                         </div>
                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">
-                          {item.consensus.agreementScore}% {t.agreement}
+                          {item.data.confidence_score} {t.agreement}
                         </span>
                       </div>
                     </button>
