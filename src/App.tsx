@@ -28,6 +28,7 @@ import {
   HelpCircle,
   X,
   Plus,
+  Table,
   ArrowRight,
   Sparkles,
   Info
@@ -48,10 +49,12 @@ import {
   Cell
 } from 'recharts';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 import { TRANSLATIONS } from './translations';
+import { FAQ_DATA } from './faqData';
 
 // --- Utility ---
 function cn(...inputs: ClassValue[]) {
@@ -133,6 +136,13 @@ interface ConsensusResult {
   read_aloud_script: string;
 }
 
+interface FileAttachment {
+  name: string;
+  type: string;
+  data: string; // base64 without prefix
+  preview?: string; // with prefix for display
+}
+
 interface HistoryItem {
   id: string;
   timestamp: number;
@@ -144,15 +154,18 @@ interface HistoryItem {
 // --- Constants ---
 const MODELS = ['Gemini 3.1 Pro', 'GPT-4o (Simulated)', 'Claude 3.5 Sonnet (Simulated)'];
 
-const SYSTEM_PROMPT = (domain: Domain, mode: Mode, language: Language) => `
+const SYSTEM_PROMPT = (domain: Domain, mode: Mode, language: Language, useTabular: boolean) => `
 You are an Advanced Multi-Agent AI System designed to evaluate, compare, and reason across multiple LLM outputs (GPT, Gemini, Claude, etc.).
 Your goal is to deliver the MOST accurate answer, explain WHY it is correct, and provide deep analytical insights using multiple intelligent modules.
 
 DOMAIN: ${domain}
 MODE: ${mode}
 LANGUAGE: ${language}
+TABULAR_PREFERENCE: ${useTabular ? 'YES (Use Markdown Tables for structured data)' : 'AUTO (Detect if structured data/comparison/statistics is needed)'}
 
 CRITICAL: You MUST respond in ${language}. All analysis, explanations, and the final answer must be in ${language}.
+
+${useTabular ? 'IMPORTANT: Focus on providing data in a clear TABULAR format whenever possible. Use Markdown Tables.' : 'AUTOMATIC DETECTION: If the query involves comparisons, statistical data, lists, or analytics, you MUST use Markdown Tables to present this structured data clearly.'}
 
 ---
 🔍 INPUT:
@@ -211,7 +224,7 @@ USER_PREFERENCE: { "priority": "${mode === 'Fast' ? 'speed' : 'accuracy'}" }
 export default function App() {
   // State
   const [query, setQuery] = useState('');
-  const [image, setImage] = useState<string | null>(null);
+  const [files, setFiles] = useState<FileAttachment[]>([]);
   const [domain, setDomain] = useState<Domain>('General');
   const [mode, setMode] = useState<Mode>('Deep');
   const [language, setLanguage] = useState<Language>('English');
@@ -222,7 +235,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'compare' | 'consensus' | 'history'>('compare');
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsView, setSettingsView] = useState<'main' | 'language'>('main');
+  const [useTabular, setUseTabular] = useState(false);
+  const [settingsView, setSettingsView] = useState<'main' | 'language' | 'faq'>('main');
+  const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
 
   const t = TRANSLATIONS[language];
 
@@ -239,18 +254,60 @@ export default function App() {
     localStorage.setItem('omnijudge_history', JSON.stringify(history));
   }, [history]);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = e.target.files;
+    if (selectedFiles) {
+      Array.from(selectedFiles).forEach(file => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          setFiles(prev => [...prev, {
+            name: file.name,
+            type: file.type,
+            data: base64.split(',')[1],
+            preview: base64.startsWith('data:image/') ? base64 : undefined
+          }]);
+        };
+        reader.readAsDataURL(file);
+      });
     }
   };
 
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
   const [isReadingAloud, setIsReadingAloud] = useState(false);
+
+  const downloadCSV = (markdown: string) => {
+    const tableRegex = /\|(.+)\|/g;
+    const rows = markdown.match(tableRegex);
+    if (!rows) return;
+
+    const csvContent = rows
+      .map(row => {
+        // Remove pipes and split by pipes, then clean up
+        return row
+          .split('|')
+          .filter(cell => cell.trim() !== '')
+          .map(cell => `"${cell.trim().replace(/"/g, '""')}"`)
+          .join(',');
+      })
+      .filter(row => !row.includes('---')) // Filter out markdown table separators
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', 'analysis_data.csv');
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
 
   const handleReadAloud = async () => {
     console.log("Read Aloud triggered");
@@ -334,7 +391,7 @@ export default function App() {
   };
 
   const runConsensus = async () => {
-    if (!query && !image) return;
+    if (!query && files.length === 0) return;
 
     setLoading(true);
     setResult(null);
@@ -352,16 +409,20 @@ export default function App() {
       let contents: any[] = [];
       if (query) {
         contents.push({ text: query });
-      } else if (image) {
-        contents.push({ text: "Analyze this image and provide a consensus report." });
       }
 
-      if (image) {
-        contents.push({
-          inlineData: {
-            mimeType: "image/jpeg",
-            data: image.split(',')[1]
-          }
+      if (files.length > 0) {
+        if (!query) {
+          contents.push({ text: "Analyze these files and provide a consensus report." });
+        }
+        
+        files.forEach(file => {
+          contents.push({
+            inlineData: {
+              mimeType: file.type || "application/octet-stream",
+              data: file.data
+            }
+          });
         });
       }
 
@@ -369,7 +430,7 @@ export default function App() {
         model: "gemini-3-flash-preview",
         contents: { parts: contents },
         config: {
-          systemInstruction: SYSTEM_PROMPT(domain, mode, language),
+          systemInstruction: SYSTEM_PROMPT(domain, mode, language, useTabular),
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -522,7 +583,7 @@ export default function App() {
       const newItem: HistoryItem = {
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now(),
-        question: query || t.imageQuery,
+        question: query || t.fileQuery,
         domain,
         data: data
       };
@@ -593,7 +654,7 @@ export default function App() {
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="absolute right-0 mt-2 w-64 glass-card p-2 z-[100] border-white/10 shadow-2xl overflow-hidden"
+                    className="absolute right-0 mt-2 w-64 bg-[#0a0a0f] border border-white/10 shadow-2xl rounded-3xl p-2 z-[100] backdrop-blur-2xl overflow-hidden"
                   >
                     {settingsView === 'main' ? (
                       <div className="space-y-1">
@@ -613,6 +674,18 @@ export default function App() {
                             <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-0.5 transition-transform" />
                           </div>
                         </button>
+                        <button 
+                          onClick={() => setSettingsView('faq')}
+                          className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/5 rounded-xl transition-colors group"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                              <HelpCircle className="w-4 h-4 text-blue-400" />
+                            </div>
+                            <span className="text-sm font-medium text-slate-200">{t.faq}</span>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-0.5 transition-transform" />
+                        </button>
                         <button className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/5 rounded-xl transition-colors">
                           <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
                             <Zap className="w-4 h-4 text-purple-400" />
@@ -620,14 +693,14 @@ export default function App() {
                           <span className="text-sm font-medium text-slate-200">{t.systemStatus}</span>
                         </button>
                       </div>
-                    ) : (
+                    ) : settingsView === 'language' ? (
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 px-1 mb-1">
                           <button 
                             onClick={() => setSettingsView('main')}
                             className="p-2 hover:bg-white/5 rounded-lg transition-colors"
                           >
-                            <X className="w-4 h-4 rotate-180" />
+                            <ChevronRight className="w-4 h-4 rotate-180" />
                           </button>
                           <span className="text-xs font-bold text-white uppercase tracking-widest">{t.selectLanguage}</span>
                         </div>
@@ -650,6 +723,51 @@ export default function App() {
                               </div>
                               {language === lang.name && <CheckCircle2 className="w-4 h-4" />}
                             </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 px-1 mb-1">
+                          <button 
+                            onClick={() => {
+                              setSettingsView('main');
+                              setExpandedFaq(null);
+                            }}
+                            className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+                          >
+                            <ChevronRight className="w-4 h-4 rotate-180" />
+                          </button>
+                          <span className="text-xs font-bold text-white uppercase tracking-widest">{t.faq}</span>
+                        </div>
+                        <div className="max-h-80 overflow-y-auto scrollbar-hide space-y-2 pr-1 p-1">
+                          {FAQ_DATA.map((item, idx) => (
+                            <div key={idx} className="border border-white/5 rounded-xl overflow-hidden bg-white/[0.02]">
+                              <button
+                                onClick={() => setExpandedFaq(expandedFaq === idx ? null : idx)}
+                                className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/5 transition-colors text-left gap-3"
+                              >
+                                <span className="text-xs font-medium text-slate-200 leading-tight">{item.question}</span>
+                                <ChevronRight className={cn(
+                                  "w-3 h-3 text-slate-500 transition-transform flex-shrink-0",
+                                  expandedFaq === idx ? "rotate-90" : ""
+                                )} />
+                              </button>
+                              <AnimatePresence>
+                                {expandedFaq === idx && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: "auto", opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div className="px-3 pb-3 text-[11px] text-slate-400 leading-relaxed border-t border-white/5 pt-2">
+                                      {item.answer}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -720,6 +838,18 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                <div className="flex bg-black/40 p-1 rounded-xl border border-white/5">
+                  <button
+                    onClick={() => setUseTabular(!useTabular)}
+                    className={cn(
+                      "px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2",
+                      useTabular ? "bg-pink-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                    )}
+                  >
+                    <Table className="w-4 h-4" />
+                    {t.tabularMode}
+                  </button>
+                </div>
               </div>
 
               {/* Input Area */}
@@ -734,15 +864,26 @@ export default function App() {
                   className="w-full bg-black/40 border border-white/10 rounded-2xl p-6 h-48 text-lg text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none"
                 />
                 
-                {image && (
-                  <div className="absolute bottom-4 left-4 group/img">
-                    <img src={image} alt="Upload" className="w-20 h-20 object-cover rounded-xl border-2 border-indigo-500/50 shadow-xl" />
-                    <button 
-                      onClick={() => setImage(null)}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover/img:opacity-100 transition-opacity"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                {files.length > 0 && (
+                  <div className="absolute bottom-4 left-4 flex flex-wrap gap-2 max-w-[80%]">
+                    {files.map((file, idx) => (
+                      <div key={idx} className="relative group/img">
+                        {file.preview ? (
+                          <img src={file.preview} alt="Upload" className="w-16 h-16 object-cover rounded-xl border-2 border-indigo-500/50 shadow-xl" />
+                        ) : (
+                          <div className="w-16 h-16 bg-white/10 rounded-xl border-2 border-white/10 flex flex-col items-center justify-center p-1 overflow-hidden">
+                            <Layers className="w-6 h-6 text-indigo-400 mb-1" />
+                            <span className="text-[8px] text-slate-400 truncate w-full text-center">{file.name}</span>
+                          </div>
+                        )}
+                        <button 
+                          onClick={() => removeFile(idx)}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover/img:opacity-100 transition-opacity z-10"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
 
@@ -751,7 +892,7 @@ export default function App() {
                     onClick={() => fileInputRef.current?.click()}
                     className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors text-slate-400 hover:text-white"
                   >
-                    <ImageIcon className="w-5 h-5" />
+                    <Plus className="w-5 h-5" />
                   </button>
                   <button className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors text-slate-400 hover:text-white">
                     <Mic className="w-5 h-5" />
@@ -759,16 +900,17 @@ export default function App() {
                   <input 
                     type="file" 
                     ref={fileInputRef} 
-                    onChange={handleImageUpload} 
+                    onChange={handleFileUpload} 
                     className="hidden" 
-                    accept="image/*" 
+                    multiple
+                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" 
                   />
                 </div>
               </div>
 
               <button
                 onClick={runConsensus}
-                disabled={loading || (!query && !image)}
+                disabled={loading || (!query && files.length === 0)}
                 className="w-full mt-6 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-2xl font-bold text-lg shadow-xl shadow-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-3 group"
               >
                 {loading ? (
@@ -1031,9 +1173,21 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="markdown-body text-lg text-white leading-relaxed mb-10">
-                        <Markdown>{result.data.final_answer}</Markdown>
+                      <div className="markdown-body text-lg text-white leading-relaxed mb-6">
+                        <Markdown remarkPlugins={[remarkGfm]}>{result.data.final_answer}</Markdown>
                       </div>
+
+                      {result.data.final_answer.includes('|') && (
+                        <div className="flex justify-end mb-10">
+                          <button 
+                            onClick={() => downloadCSV(result.data.final_answer)}
+                            className="flex items-center gap-2 px-4 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 rounded-xl text-sm font-bold transition-all border border-indigo-500/20 group"
+                          >
+                            <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />
+                            Download CSV Analysis
+                          </button>
+                        </div>
+                      )}
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="p-6 bg-white/5 rounded-2xl border border-white/5">
